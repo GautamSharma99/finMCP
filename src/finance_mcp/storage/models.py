@@ -2,6 +2,13 @@
 
 Every module boundary exchanges these models, not raw dicts. FastMCP
 derives tool schemas from these types.
+
+Money fields on *outward-facing* DTOs use ``float`` rather than
+``Decimal``. Pydantic's Decimal JSON schema includes a negative
+lookahead that the jsonschema-rs validator on the FastMCP client side
+can't parse, which crashes tool responses. The repository stores
+amounts as TEXT and performs arithmetic via Decimal internally for
+accuracy — ``Money`` is only a *transport* type.
 """
 
 from __future__ import annotations
@@ -11,6 +18,8 @@ from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+Money = float
 
 AccountType = Literal["savings", "credit_card", "cash"]
 Period = Literal["monthly", "quarterly", "yearly"]
@@ -60,7 +69,10 @@ class Rule(_Base):
 
 
 class RawTransaction(_Base):
-    """A transaction straight out of a parser, before DB persistence."""
+    """A transaction straight out of a parser, before DB persistence.
+
+    Internal only — never serialized over MCP, so Decimal is safe.
+    """
 
     txn_date: date
     value_date: date | None = None
@@ -79,14 +91,14 @@ class Transaction(_Base):
     account_id: int
     txn_date: date
     value_date: date | None = None
-    amount: Decimal
+    amount: Money
     currency: str = "INR"
     raw_description: str
     clean_merchant: str | None = None
     category_id: int | None = None
     category_source: CategorySource | None = None
     reference_no: str | None = None
-    running_balance: Decimal | None = None
+    running_balance: Money | None = None
     is_transfer: bool = False
     transfer_pair_id: int | None = None
     notes: str | None = None
@@ -99,7 +111,7 @@ class Budget(_Base):
 
     id: int | None = None
     category_id: int
-    amount: Decimal
+    amount: Money
     period: Period
     start_date: date
     end_date: date | None = None
@@ -111,8 +123,8 @@ class Goal(_Base):
 
     id: int | None = None
     name: str
-    target_amount: Decimal
-    current_amount: Decimal = Decimal("0")
+    target_amount: Money
+    current_amount: Money = 0.0
     deadline: date | None = None
     linked_account_id: int | None = None
     created_at: datetime | None = None
@@ -143,7 +155,7 @@ class SummaryRow(_Base):
     """One row of a spending summary."""
 
     group_key: str = Field(description="Category name, merchant, or YYYY-MM month")
-    total_amount: Decimal
+    total_amount: Money
     txn_count: int
 
 
@@ -151,9 +163,9 @@ class ComparisonRow(_Base):
     """One row of a period-vs-period comparison."""
 
     group_key: str
-    period_a_total: Decimal
-    period_b_total: Decimal
-    delta: Decimal
+    period_a_total: Money
+    period_b_total: Money
+    delta: Money
     delta_pct: float | None = None
 
 
@@ -161,9 +173,9 @@ class BudgetStatus(_Base):
     """A budget + its utilization for a given period."""
 
     category_name: str
-    budgeted: Decimal
-    spent: Decimal
-    remaining: Decimal
+    budgeted: Money
+    spent: Money
+    remaining: Money
     utilization_pct: float
 
 
@@ -171,8 +183,8 @@ class GoalProgress(_Base):
     """Progress toward a goal."""
 
     name: str
-    target_amount: Decimal
-    current_amount: Decimal
+    target_amount: Money
+    current_amount: Money
     progress_pct: float
     deadline: date | None = None
     on_track: bool | None = None
@@ -182,7 +194,7 @@ class RecurringTxn(_Base):
     """A detected recurring/subscription charge."""
 
     merchant: str
-    avg_amount: Decimal
+    avg_amount: Money
     cadence_days: int
     occurrences: int
     last_seen: date
@@ -193,9 +205,9 @@ class NetWorth(_Base):
     """Net worth snapshot."""
 
     as_of: date
-    total_assets: Decimal
-    total_liabilities: Decimal
-    net_worth: Decimal
+    total_assets: Money
+    total_liabilities: Money
+    net_worth: Money
 
 
 __all__ = [
@@ -211,6 +223,7 @@ __all__ = [
     "GroupBy",
     "ImportResult",
     "MatchType",
+    "Money",
     "NetWorth",
     "OperationResult",
     "Period",

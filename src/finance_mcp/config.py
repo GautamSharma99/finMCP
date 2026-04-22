@@ -14,6 +14,15 @@ def _default_db_path() -> Path:
     return Path.home() / ".finance_mcp" / "finance.db"
 
 
+def get_db_path() -> Path:
+    """Return the currently configured DB path, re-reading env each call.
+
+    Tools use this so that tests can override ``FINANCE_MCP_DB_PATH`` via
+    ``monkeypatch.setenv`` after the process started.
+    """
+    return _default_db_path()
+
+
 @dataclass(frozen=True)
 class Settings:
     """Immutable runtime settings resolved at import time."""

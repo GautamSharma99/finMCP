@@ -289,6 +289,121 @@ class Repository:
             ).fetchall()
         return [_transaction_from_row(r) for r in rows]
 
+    def query_transactions(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        category: str | None = None,
+        account: str | None = None,
+        merchant: str | None = None,
+        min_amount: Decimal | float | None = None,
+        max_amount: Decimal | float | None = None,
+        uncategorized_only: bool = False,
+        limit: int = 100,
+    ) -> list[Transaction]:
+        """Filter transactions across accounts with AND semantics.
+
+        Category matches either leaf or parent name. Account matches the
+        stored account name exactly. Merchant is a case-insensitive
+        substring of ``clean_merchant`` or ``raw_description``.
+        """
+        clauses: list[str] = []
+        params: list[object] = []
+
+        if start_date is not None:
+            clauses.append("t.txn_date >= ?")
+            params.append(start_date.isoformat())
+        if end_date is not None:
+            clauses.append("t.txn_date <= ?")
+            params.append(end_date.isoformat())
+        if min_amount is not None:
+            clauses.append("CAST(t.amount AS REAL) >= ?")
+            params.append(float(min_amount))
+        if max_amount is not None:
+            clauses.append("CAST(t.amount AS REAL) <= ?")
+            params.append(float(max_amount))
+        if merchant:
+            clauses.append(
+                "(UPPER(COALESCE(t.clean_merchant, '')) LIKE ? "
+                "OR UPPER(t.raw_description) LIKE ?)"
+            )
+            needle = f"%{merchant.upper()}%"
+            params.extend([needle, needle])
+        if account:
+            clauses.append(
+                "t.account_id = (SELECT id FROM accounts WHERE name = ?)"
+            )
+            params.append(account)
+        if category:
+            # Match transactions whose category is the named leaf or any
+            # child of a parent with that name.
+            clauses.append(
+                "t.category_id IN ("
+                " SELECT id FROM categories WHERE LOWER(name) = LOWER(?)"
+                " UNION"
+                " SELECT id FROM categories"
+                "  WHERE parent_id = (SELECT id FROM categories"
+                "   WHERE LOWER(name) = LOWER(?) AND parent_id IS NULL)"
+                ")"
+            )
+            params.extend([category, category])
+        if uncategorized_only:
+            clauses.append("(t.category_id IS NULL OR t.category_source = 'uncategorized')")
+
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT t.* FROM transactions t"
+            f"{where} ORDER BY t.txn_date DESC, t.id DESC LIMIT ?"
+        )
+        params.append(int(limit))
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_transaction_from_row(r) for r in rows]
+
+    def spending_summary(
+        self,
+        start_date: date,
+        end_date: date,
+        group_by: str,
+    ) -> list[tuple[str, Decimal, int]]:
+        """Return ``(group_key, total_amount, txn_count)`` tuples.
+
+        ``group_by`` must be one of 'category', 'merchant', or 'month'.
+        Amounts are summed as stored (debits negative, credits positive).
+        Results are ordered by total descending (most negative first).
+        """
+        if group_by == "category":
+            sql = (
+                "SELECT COALESCE(c.name, 'Uncategorized') AS k,"
+                " CAST(SUM(t.amount) AS TEXT) AS total,"
+                " COUNT(*) AS n "
+                "FROM transactions t LEFT JOIN categories c ON c.id = t.category_id "
+                "WHERE t.txn_date >= ? AND t.txn_date <= ? "
+                "GROUP BY k ORDER BY SUM(t.amount) ASC"
+            )
+        elif group_by == "merchant":
+            sql = (
+                "SELECT COALESCE(t.clean_merchant, 'Unknown') AS k,"
+                " CAST(SUM(t.amount) AS TEXT) AS total,"
+                " COUNT(*) AS n "
+                "FROM transactions t "
+                "WHERE t.txn_date >= ? AND t.txn_date <= ? "
+                "GROUP BY k ORDER BY SUM(t.amount) ASC"
+            )
+        elif group_by == "month":
+            sql = (
+                "SELECT strftime('%Y-%m', t.txn_date) AS k,"
+                " CAST(SUM(t.amount) AS TEXT) AS total,"
+                " COUNT(*) AS n "
+                "FROM transactions t "
+                "WHERE t.txn_date >= ? AND t.txn_date <= ? "
+                "GROUP BY k ORDER BY k ASC"
+            )
+        else:
+            raise ValueError(f"invalid group_by: {group_by!r}")
+
+        rows = self._conn.execute(sql, (start_date.isoformat(), end_date.isoformat())).fetchall()
+        return [(r["k"], Decimal(str(r["total"])), int(r["n"])) for r in rows]
+
     def count_transactions(self, account_id: int | None = None) -> int:
         """Return the number of transactions (optionally per account)."""
         if account_id is None:
@@ -321,6 +436,37 @@ class Repository:
                 (category_id, source, txn_id),
             )
         return self.get_transaction(txn_id)
+
+    def bulk_update_category(
+        self,
+        category_id: int,
+        merchant: str | None = None,
+        uncategorized_only: bool = True,
+        source: str = "manual",
+    ) -> int:
+        """Reassign matching transactions to a category. Returns row count.
+
+        Manual labels are never overwritten, regardless of ``source``.
+        """
+        clauses: list[str] = ["category_source IS NOT 'manual'"]
+        params: list[object] = [category_id, source]
+
+        if uncategorized_only:
+            clauses.append("(category_id IS NULL OR category_source = 'uncategorized')")
+        if merchant:
+            clauses.append(
+                "(UPPER(COALESCE(clean_merchant, '')) LIKE ?"
+                " OR UPPER(raw_description) LIKE ?)"
+            )
+            needle = f"%{merchant.upper()}%"
+            params.extend([needle, needle])
+
+        sql = "UPDATE transactions SET category_id = ?, category_source = ? WHERE " + " AND ".join(
+            clauses
+        )
+        with transaction(self._conn):
+            cur = self._conn.execute(sql, params)
+            return cur.rowcount
 
     def bulk_insert_transactions(
         self,
@@ -405,7 +551,7 @@ def _transaction_from_row(row: sqlite3.Row) -> Transaction:
         account_id=row["account_id"],
         txn_date=_parse_date(row["txn_date"]),
         value_date=_parse_date(row["value_date"]) if row["value_date"] else None,
-        amount=Decimal(str(row["amount"])),
+        amount=float(Decimal(str(row["amount"]))),
         currency=row["currency"],
         raw_description=row["raw_description"],
         clean_merchant=row["clean_merchant"],
@@ -413,7 +559,9 @@ def _transaction_from_row(row: sqlite3.Row) -> Transaction:
         category_source=row["category_source"],
         reference_no=row["reference_no"],
         running_balance=(
-            Decimal(str(row["running_balance"])) if row["running_balance"] is not None else None
+            float(Decimal(str(row["running_balance"])))
+            if row["running_balance"] is not None
+            else None
         ),
         is_transfer=bool(row["is_transfer"]),
         transfer_pair_id=row["transfer_pair_id"],
