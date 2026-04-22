@@ -56,7 +56,7 @@ def get_spending_summary(
     with get_repo() as repo:
         rows = repo.spending_summary(start_date, end_date, group_by)
     return [
-        SummaryRow(group_key=k, total_amount=total, txn_count=n) for k, total, n in rows
+        SummaryRow(group_key=k, total_amount=float(total), txn_count=n) for k, total, n in rows
     ]
 
 
