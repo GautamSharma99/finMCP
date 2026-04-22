@@ -18,18 +18,12 @@ def categorize_transaction(
     with get_repo() as repo:
         category = repo.find_category_by_name(category_name)
         if category is None or category.id is None:
-            return OperationResult(
-                success=False, message=f"unknown category: {category_name!r}"
-            )
+            return OperationResult(success=False, message=f"unknown category: {category_name!r}")
         try:
             repo.get_transaction(transaction_id)
         except KeyError:
-            return OperationResult(
-                success=False, message=f"no such transaction: {transaction_id}"
-            )
-        updated = repo.set_transaction_category(
-            transaction_id, category.id, source="manual"
-        )
+            return OperationResult(success=False, message=f"no such transaction: {transaction_id}")
+        updated = repo.set_transaction_category(transaction_id, category.id, source="manual")
     return OperationResult(
         success=True,
         affected=1,
@@ -51,14 +45,10 @@ def bulk_categorize(
     with get_repo() as repo:
         category = repo.find_category_by_name(category_name)
         if category is None or category.id is None:
-            return OperationResult(
-                success=False, message=f"unknown category: {category_name!r}"
-            )
+            return OperationResult(success=False, message=f"unknown category: {category_name!r}")
         n = repo.bulk_update_category(
             category_id=category.id,
             merchant=merchant,
             uncategorized_only=uncategorized_only,
         )
-    return OperationResult(
-        success=True, affected=n, message=f"updated {n} transactions"
-    )
+    return OperationResult(success=True, affected=n, message=f"updated {n} transactions")

@@ -118,9 +118,7 @@ async def test_spending_summary_by_category(mcp_client: Client, repo: Repository
     assert "Food Delivery" in keys
 
 
-async def test_categorize_transaction_marks_manual(
-    mcp_client: Client, repo: Repository
-) -> None:
+async def test_categorize_transaction_marks_manual(mcp_client: Client, repo: Repository) -> None:
     acct = repo.create_account(name="HDFC", type="savings", bank="HDFC")
     assert acct.id is not None
     repo.bulk_insert_transactions(
@@ -203,6 +201,4 @@ async def test_create_rule_unknown_category_raises(mcp_client: Client) -> None:
     from fastmcp.exceptions import ToolError
 
     with pytest.raises(ToolError):
-        await mcp_client.call_tool(
-            "create_rule", {"pattern": "X", "category_name": "Nope"}
-        )
+        await mcp_client.call_tool("create_rule", {"pattern": "X", "category_name": "Nope"})

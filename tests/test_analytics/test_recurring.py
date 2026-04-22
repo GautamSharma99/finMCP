@@ -16,8 +16,11 @@ def _seed_monthly(
     start = date(2025, 1, 8)
     rows: list[RawTransaction] = []
     for i in range(months):
-        d = date(start.year, start.month + i if start.month + i <= 12 else (start.month + i) - 12,
-                 start.day)
+        d = date(
+            start.year,
+            start.month + i if start.month + i <= 12 else (start.month + i) - 12,
+            start.day,
+        )
         rows.append(
             RawTransaction(
                 txn_date=d,

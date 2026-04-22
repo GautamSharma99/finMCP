@@ -29,9 +29,7 @@ class _Stats(NamedTuple):
 def _cadence_stats(sorted_dates: list[date]) -> _Stats | None:
     if len(sorted_dates) < 2:
         return None
-    gaps = [
-        (sorted_dates[i] - sorted_dates[i - 1]).days for i in range(1, len(sorted_dates))
-    ]
+    gaps = [(sorted_dates[i] - sorted_dates[i - 1]).days for i in range(1, len(sorted_dates))]
     gaps = [g for g in gaps if g > 0]
     if not gaps:
         return None

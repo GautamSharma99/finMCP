@@ -50,7 +50,18 @@ def get_repo() -> Iterator[Repository]:
         repo.close()
 
 
-# Importing these modules fires the decorators that register tools on `mcp`.
+# Importing these modules fires the decorators that register handlers on `mcp`.
+from finance_mcp.prompts import (  # noqa: E402, F401
+    find_savings,
+    goal_check,
+    monthly_review,
+)
+from finance_mcp.resources import (  # noqa: E402, F401
+    accounts,
+    budgets,
+    categories,
+    insights,
+)
 from finance_mcp.tools import (  # noqa: E402, F401
     account_tools,
     budget_tools,

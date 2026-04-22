@@ -260,9 +260,7 @@ class Repository:
         ).fetchall()
         return [_budget_from_row(r) for r in rows]
 
-    def category_spend(
-        self, category_id: int, start_date: date, end_date: date
-    ) -> Decimal:
+    def category_spend(self, category_id: int, start_date: date, end_date: date) -> Decimal:
         """Return the absolute spend (positive) on a category over a window.
 
         Only debits (negative amounts) are summed; credits (refunds) net
@@ -516,15 +514,12 @@ class Repository:
             params.append(float(max_amount))
         if merchant:
             clauses.append(
-                "(UPPER(COALESCE(t.clean_merchant, '')) LIKE ? "
-                "OR UPPER(t.raw_description) LIKE ?)"
+                "(UPPER(COALESCE(t.clean_merchant, '')) LIKE ? OR UPPER(t.raw_description) LIKE ?)"
             )
             needle = f"%{merchant.upper()}%"
             params.extend([needle, needle])
         if account:
-            clauses.append(
-                "t.account_id = (SELECT id FROM accounts WHERE name = ?)"
-            )
+            clauses.append("t.account_id = (SELECT id FROM accounts WHERE name = ?)")
             params.append(account)
         if category:
             # Match transactions whose category is the named leaf or any
@@ -543,10 +538,7 @@ class Repository:
             clauses.append("(t.category_id IS NULL OR t.category_source = 'uncategorized')")
 
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = (
-            "SELECT t.* FROM transactions t"
-            f"{where} ORDER BY t.txn_date DESC, t.id DESC LIMIT ?"
-        )
+        sql = f"SELECT t.* FROM transactions t{where} ORDER BY t.txn_date DESC, t.id DESC LIMIT ?"
         params.append(int(limit))
         rows = self._conn.execute(sql, params).fetchall()
         return [_transaction_from_row(r) for r in rows]
@@ -647,8 +639,7 @@ class Repository:
             clauses.append("(category_id IS NULL OR category_source = 'uncategorized')")
         if merchant:
             clauses.append(
-                "(UPPER(COALESCE(clean_merchant, '')) LIKE ?"
-                " OR UPPER(raw_description) LIKE ?)"
+                "(UPPER(COALESCE(clean_merchant, '')) LIKE ? OR UPPER(raw_description) LIKE ?)"
             )
             needle = f"%{merchant.upper()}%"
             params.extend([needle, needle])
