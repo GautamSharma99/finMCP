@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(uv --version)",
-      "Bash(uv run *)"
+      "Bash(uv run *)",
+      "Bash(git add *)",
+      "Bash(git check-ignore *)"
     ]
   }
 }
