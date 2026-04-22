@@ -130,7 +130,7 @@ def _seed_default_categories(conn: sqlite3.Connection) -> None:
 
 
 def init_db(db_path: str | Path) -> None:
-    """Create the database, apply migrations, seed categories.
+    """Create the database, apply migrations, seed categories and rules.
 
     Safe to call repeatedly: migrations and seeds are idempotent.
     """
@@ -142,3 +142,11 @@ def init_db(db_path: str | Path) -> None:
         _seed_default_categories(conn)
     finally:
         conn.close()
+
+    # Rule seeding uses the Repository abstraction; run after base schema + categories.
+    # Kept separate from category seeding to avoid a circular import at module load.
+    from finance_mcp.categorization.rules import seed_default_rules
+    from finance_mcp.storage.repository import Repository
+
+    with Repository.open(path) as repo:
+        seed_default_rules(repo)
