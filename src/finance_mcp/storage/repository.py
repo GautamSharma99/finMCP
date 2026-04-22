@@ -23,7 +23,9 @@ from finance_mcp.errors import (
 from finance_mcp.storage.db import connect, transaction
 from finance_mcp.storage.models import (
     Account,
+    Budget,
     Category,
+    Goal,
     RawTransaction,
     Rule,
     Transaction,
@@ -213,6 +215,196 @@ class Repository:
     def count_rules(self) -> int:
         """Return the total rule count."""
         return int(self._conn.execute("SELECT COUNT(*) AS n FROM rules").fetchone()["n"])
+
+    # --- Budgets -----------------------------------------------------------
+
+    def upsert_budget(
+        self,
+        category_id: int,
+        amount: Decimal | float,
+        period: str,
+        start_date: date,
+        end_date: date | None = None,
+    ) -> Budget:
+        """Insert or update a budget (UNIQUE on category/period/start_date)."""
+        amount_str = str(Decimal(str(amount)))
+        with transaction(self._conn):
+            self._conn.execute(
+                """
+                INSERT INTO budgets(category_id, amount, period, start_date, end_date)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(category_id, period, start_date)
+                DO UPDATE SET amount = excluded.amount, end_date = excluded.end_date
+                """,
+                (
+                    category_id,
+                    amount_str,
+                    period,
+                    start_date.isoformat(),
+                    end_date.isoformat() if end_date else None,
+                ),
+            )
+        row = self._conn.execute(
+            """
+            SELECT * FROM budgets
+            WHERE category_id = ? AND period = ? AND start_date = ?
+            """,
+            (category_id, period, start_date.isoformat()),
+        ).fetchone()
+        return _budget_from_row(row)
+
+    def list_budgets(self) -> list[Budget]:
+        """All budgets ordered by start_date desc."""
+        rows = self._conn.execute(
+            "SELECT * FROM budgets ORDER BY start_date DESC, id DESC"
+        ).fetchall()
+        return [_budget_from_row(r) for r in rows]
+
+    def category_spend(
+        self, category_id: int, start_date: date, end_date: date
+    ) -> Decimal:
+        """Return the absolute spend (positive) on a category over a window.
+
+        Only debits (negative amounts) are summed; credits (refunds) net
+        off to reduce the reported spend.
+        """
+        row = self._conn.execute(
+            """
+            SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) AS s
+            FROM transactions t
+            WHERE t.txn_date >= ? AND t.txn_date <= ?
+              AND t.category_id IN (
+                SELECT id FROM categories WHERE id = ?
+                UNION SELECT id FROM categories WHERE parent_id = ?
+              )
+            """,
+            (start_date.isoformat(), end_date.isoformat(), category_id, category_id),
+        ).fetchone()
+        # Stored debits are negative; a spend of 1000 appears as -1000 in SUM.
+        return Decimal(str(-float(row["s"])))
+
+    # --- Goals -------------------------------------------------------------
+
+    def upsert_goal(
+        self,
+        name: str,
+        target_amount: Decimal | float,
+        deadline: date | None = None,
+        linked_account_id: int | None = None,
+    ) -> Goal:
+        """Insert or update a goal keyed by name."""
+        amount_str = str(Decimal(str(target_amount)))
+        with transaction(self._conn):
+            self._conn.execute(
+                """
+                INSERT INTO goals(name, target_amount, deadline, linked_account_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    target_amount = excluded.target_amount,
+                    deadline = excluded.deadline,
+                    linked_account_id = excluded.linked_account_id
+                """,
+                (
+                    name,
+                    amount_str,
+                    deadline.isoformat() if deadline else None,
+                    linked_account_id,
+                ),
+            )
+        return self.get_goal_by_name(name)
+
+    def get_goal_by_name(self, name: str) -> Goal:
+        row = self._conn.execute("SELECT * FROM goals WHERE name = ?", (name,)).fetchone()
+        if row is None:
+            raise KeyError(f"goal name={name!r}")
+        return _goal_from_row(row)
+
+    def list_goals(self) -> list[Goal]:
+        rows = self._conn.execute("SELECT * FROM goals ORDER BY id").fetchall()
+        return [_goal_from_row(r) for r in rows]
+
+    def set_goal_current_amount(self, name: str, amount: Decimal | float) -> Goal:
+        with transaction(self._conn):
+            self._conn.execute(
+                "UPDATE goals SET current_amount = ? WHERE name = ?",
+                (str(Decimal(str(amount))), name),
+            )
+        return self.get_goal_by_name(name)
+
+    # --- Aggregates --------------------------------------------------------
+
+    def net_worth_as_of(self, as_of: date) -> tuple[Decimal, Decimal]:
+        """Return ``(assets, liabilities)`` as positive numbers.
+
+        Assets: sum of positive net balances on savings/cash accounts.
+        Liabilities: absolute value of negative net balances on credit
+        card accounts (i.e. outstanding card debt).
+        """
+        row = self._conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(CASE WHEN a.type IN ('savings','cash')
+                  AND CAST(t.amount AS REAL) > 0 THEN CAST(t.amount AS REAL) END), 0)
+                -
+              COALESCE(SUM(CASE WHEN a.type IN ('savings','cash')
+                  AND CAST(t.amount AS REAL) < 0 THEN ABS(CAST(t.amount AS REAL)) END), 0)
+              AS assets,
+              COALESCE(SUM(CASE WHEN a.type = 'credit_card'
+                  THEN CAST(t.amount AS REAL) END), 0) AS cc_net
+            FROM transactions t JOIN accounts a ON a.id = t.account_id
+            WHERE t.txn_date <= ?
+            """,
+            (as_of.isoformat(),),
+        ).fetchone()
+        assets = Decimal(str(row["assets"]))
+        cc_net = Decimal(str(row["cc_net"]))
+        # On credit cards, debit = -amount spent, payments = +amount. A
+        # net-negative cc means outstanding debt; net-positive means
+        # prepayment (treated as zero liability).
+        liabilities = -cc_net if cc_net < 0 else Decimal("0")
+        return assets, liabilities
+
+    def merchant_history(
+        self,
+        min_occurrences: int,
+        lookback_start: date,
+    ) -> list[tuple[str, list[date], list[Decimal], int | None]]:
+        """Return per-merchant history for recurring detection.
+
+        Emits ``(merchant, [dates], [amounts], category_id)`` for every
+        merchant with at least ``min_occurrences`` debits since
+        ``lookback_start``.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT clean_merchant, txn_date, amount, category_id
+            FROM transactions
+            WHERE clean_merchant IS NOT NULL
+              AND clean_merchant != ''
+              AND txn_date >= ?
+              AND CAST(amount AS REAL) < 0
+            ORDER BY clean_merchant, txn_date
+            """,
+            (lookback_start.isoformat(),),
+        ).fetchall()
+
+        dates_by: dict[str, list[date]] = {}
+        amounts_by: dict[str, list[Decimal]] = {}
+        category_by: dict[str, int | None] = {}
+
+        for r in rows:
+            m = str(r["clean_merchant"])
+            dates_by.setdefault(m, []).append(_parse_date(r["txn_date"]))
+            amounts_by.setdefault(m, []).append(Decimal(str(r["amount"])))
+            if category_by.get(m) is None and r["category_id"] is not None:
+                category_by[m] = int(r["category_id"])
+
+        out: list[tuple[str, list[date], list[Decimal], int | None]] = []
+        for m, ds in dates_by.items():
+            if len(ds) < min_occurrences:
+                continue
+            out.append((m, ds, amounts_by[m], category_by.get(m)))
+        return out
 
     # --- Transactions ------------------------------------------------------
 
@@ -519,6 +711,30 @@ def _account_from_row(row: sqlite3.Row) -> Account:
         type=row["type"],
         bank=row["bank"],
         currency=row["currency"],
+        created_at=_parse_timestamp(row["created_at"]),
+    )
+
+
+def _budget_from_row(row: sqlite3.Row) -> Budget:
+    return Budget(
+        id=row["id"],
+        category_id=row["category_id"],
+        amount=float(Decimal(str(row["amount"]))),
+        period=row["period"],
+        start_date=_parse_date(row["start_date"]),
+        end_date=_parse_date(row["end_date"]) if row["end_date"] else None,
+        created_at=_parse_timestamp(row["created_at"]),
+    )
+
+
+def _goal_from_row(row: sqlite3.Row) -> Goal:
+    return Goal(
+        id=row["id"],
+        name=row["name"],
+        target_amount=float(Decimal(str(row["target_amount"]))),
+        current_amount=float(Decimal(str(row["current_amount"]))),
+        deadline=_parse_date(row["deadline"]) if row["deadline"] else None,
+        linked_account_id=row["linked_account_id"],
         created_at=_parse_timestamp(row["created_at"]),
     )
 

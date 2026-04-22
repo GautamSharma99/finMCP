@@ -53,8 +53,11 @@ def get_repo() -> Iterator[Repository]:
 # Importing these modules fires the decorators that register tools on `mcp`.
 from finance_mcp.tools import (  # noqa: E402, F401
     account_tools,
+    budget_tools,
     category_tools,
+    goal_tools,
     import_tools,
+    insight_tools,
     query_tools,
     rule_tools,
 )
